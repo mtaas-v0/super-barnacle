@@ -29,9 +29,9 @@ inline sourcemeta::core::JSON parse_json_input(const char* input) {
 }
 
 inline const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& val, std::string_view key) {
-    if (!val.is_object()) return nullptr;
     try {
-        return &val.at(key);
+        if (!val.is_object()) return nullptr;
+        return &val.at(std::string(key));
     } catch (...) {
         return nullptr;
     }
@@ -42,40 +42,46 @@ inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key
 }
 
 std::string to_json_string(const sourcemeta::core::JSON& val) {
-    std::ostringstream ss;
-    ss << val;
-    return ss.str();
+    try {
+        std::ostringstream ss;
+        ss << val;
+        return ss.str();
+    } catch (...) {
+        return "null";
+    }
 }
 
-// Extracts a string value without enclosing JSON quotes
 std::string clean_string(const sourcemeta::core::JSON& val) {
-    if (!val.is_string()) return "";
-    std::string s;
     try {
-        s = val.to_string();
+        if (!val.is_string()) return "";
+        std::string s = std::string(val.to_string());
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            s = s.substr(1, s.size() - 2);
+        }
+        return s;
     } catch (...) {
-        s = to_json_string(val);
+        return "";
     }
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
-        s = s.substr(1, s.size() - 2);
-    }
-    return s;
 }
 
 double clean_number(const sourcemeta::core::JSON& val) {
-    if (val.is_integer()) return static_cast<double>(val.to_integer());
-    if (val.is_real()) return val.to_real();
+    try {
+        if (val.is_integer()) return static_cast<double>(val.to_integer());
+        if (val.is_real()) return val.to_real();
+    } catch (...) {}
     return 0.0;
 }
 
 std::string json_type_name(const sourcemeta::core::JSON& val) {
-    if (val.is_null()) return "null";
-    if (val.is_boolean()) return "boolean";
-    if (val.is_integer()) return "integer";
-    if (val.is_real()) return "number";
-    if (val.is_string()) return "string";
-    if (val.is_array()) return "array";
-    if (val.is_object()) return "object";
+    try {
+        if (val.is_null()) return "null";
+        if (val.is_boolean()) return "boolean";
+        if (val.is_integer()) return "integer";
+        if (val.is_real()) return "number";
+        if (val.is_string()) return "string";
+        if (val.is_array()) return "array";
+        if (val.is_object()) return "object";
+    } catch (...) {}
     return "unknown";
 }
 
@@ -94,12 +100,16 @@ using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
 ));
 
 /* -------------------------------------------------------------------------
- * Internal Wrapper Structures
+ * Internal Wrapper Structures (Pinned Lifetime Layout)
  * ------------------------------------------------------------------------- */
 
 struct blaze_schema {
-    BlazeSchemaType obj;
+    // 1. Permanent text storage
+    std::string schema_str;
+    // 2. Permanent AST referencing schema_str
     sourcemeta::core::JSON raw_schema;
+    // 3. Compiled instructions referencing raw_schema
+    std::unique_ptr<BlazeSchemaType> obj;
 };
 
 struct blaze_evaluator {
@@ -282,17 +292,26 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
     (void)mode;
 
     try {
-        const auto parsed_schema = parse_json_input(schema_json);
+        auto schema = std::make_unique<blaze_schema>();
 
-        auto native_schema = sourcemeta::blaze::compile(
-            parsed_schema,
+        // 1. Copy the raw JSON string to own its heap memory permanently
+        schema->schema_str = schema_json;
+
+        // 2. Parse the AST referencing the owned string buffer
+        schema->raw_schema = parse_json_input(schema->schema_str.c_str());
+
+        // 3. Compile the schema against the owned AST
+        auto compiled = sourcemeta::blaze::compile(
+            schema->raw_schema,
             sourcemeta::blaze::schema_walker,
             sourcemeta::blaze::schema_resolver,
             sourcemeta::blaze::default_schema_compiler,
             sourcemeta::blaze::Mode::FastValidation
         );
 
-        return new blaze_schema{ std::move(native_schema), parsed_schema };
+        schema->obj = std::make_unique<BlazeSchemaType>(std::move(compiled));
+
+        return schema.release();
     } catch (...) {
         return nullptr;
     }
@@ -319,13 +338,13 @@ void blaze_evaluator_destroy(blaze_evaluator_t* evaluator) {
 blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
                                          const blaze_schema_t* schema,
                                          const char* instance_json) {
-    if (!evaluator || !schema || !instance_json) {
+    if (!evaluator || !schema || !schema->obj || !instance_json) {
         return nullptr;
     }
 
     try {
         const auto instance = parse_json_input(instance_json);
-        const bool is_valid = evaluator->obj.validate(schema->obj, instance);
+        const bool is_valid = evaluator->obj.validate(*(schema->obj), instance);
 
         auto* res = new blaze_result{};
         res->holds_validity = is_valid;
