@@ -28,6 +28,23 @@ inline sourcemeta::core::JSON parse_json_input(const char* input) {
     return sourcemeta::core::parse_json(input);
 }
 
+std::string json_type_name(const sourcemeta::core::JSON& val) {
+    if (val.is_null()) return "null";
+    if (val.is_boolean()) return "boolean";
+    if (val.is_integer()) return "integer";
+    if (val.is_real()) return "number";
+    if (val.is_string()) return "string";
+    if (val.is_array()) return "array";
+    if (val.is_object()) return "object";
+    return "unknown";
+}
+
+std::string to_json_string(const sourcemeta::core::JSON& val) {
+    std::ostringstream ss;
+    ss << val;
+    return ss.str();
+}
+
 } // namespace
 
 using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
@@ -44,6 +61,7 @@ using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
 
 struct blaze_schema {
     BlazeSchemaType obj;
+    sourcemeta::core::JSON raw_schema;
 };
 
 struct blaze_evaluator {
@@ -79,6 +97,128 @@ struct blaze_annotation_iterator {
 };
 
 /* -------------------------------------------------------------------------
+ * Diagnostic Drilldown & Annotation Extractors
+ * ------------------------------------------------------------------------- */
+
+namespace {
+
+void collect_annotations(const sourcemeta::core::JSON& schema,
+                         const std::string& current_path,
+                         std::vector<blaze_annotation_item>& annotations) {
+    if (!schema.is_object()) return;
+
+    for (const auto& keyword : {"title", "description", "default", "examples"}) {
+        if (schema.has(keyword)) {
+            annotations.push_back(blaze_annotation_item{
+                current_path,
+                keyword,
+                to_json_string(schema[keyword])
+            });
+        }
+    }
+
+    if (schema.has("properties") && schema["properties"].is_object()) {
+        for (const auto& [prop_key, prop_schema] : schema["properties"].items()) {
+            std::string subpath = current_path + "/" + std::string(prop_key);
+            collect_annotations(prop_schema, subpath, annotations);
+        }
+    }
+}
+
+void diagnose_instance(const sourcemeta::core::JSON& schema,
+                       const sourcemeta::core::JSON& instance,
+                       const std::string& inst_path,
+                       const std::string& schema_path,
+                       std::vector<blaze_error_item>& errors) {
+    if (!schema.is_object()) return;
+
+    // 1. Check type assertion
+    if (schema.has("type") && schema["type"].is_string()) {
+        std::string expected_type = schema["type"].to_string();
+        std::string actual_type = json_type_name(instance);
+
+        bool type_match = (expected_type == actual_type) ||
+                          (expected_type == "number" && actual_type == "integer");
+
+        if (!type_match) {
+            errors.push_back(blaze_error_item{
+                inst_path.empty() ? "/" : inst_path,
+                schema_path + "/type",
+                "Expected type '" + expected_type + "', but found " + actual_type
+            });
+            return;
+        }
+    }
+
+    // 2. Check required properties (for objects)
+    if (schema.has("required") && schema["required"].is_array() && instance.is_object()) {
+        for (std::size_t i = 0; i < schema["required"].size(); ++i) {
+            std::string req_key = schema["required"][i].to_string();
+            if (!instance.has(req_key)) {
+                errors.push_back(blaze_error_item{
+                    inst_path + "/" + req_key,
+                    schema_path + "/required",
+                    "Missing required property '" + req_key + "'"
+                });
+            }
+        }
+    }
+
+    // 3. Check numeric constraints (minimum, maximum)
+    if (instance.is_integer() || instance.is_real()) {
+        double val = instance.is_integer() ? static_cast<double>(instance.to_integer()) : instance.to_real();
+        if (schema.has("minimum")) {
+            double min_val = schema["minimum"].is_integer() ? static_cast<double>(schema["minimum"].to_integer()) : schema["minimum"].to_real();
+            if (val < min_val) {
+                errors.push_back(blaze_error_item{
+                    inst_path.empty() ? "/" : inst_path,
+                    schema_path + "/minimum",
+                    "Value " + to_json_string(instance) + " is less than minimum " + to_json_string(schema["minimum"])
+                });
+            }
+        }
+        if (schema.has("maximum")) {
+            double max_val = schema["maximum"].is_integer() ? static_cast<double>(schema["maximum"].to_integer()) : schema["maximum"].to_real();
+            if (val > max_val) {
+                errors.push_back(blaze_error_item{
+                    inst_path.empty() ? "/" : inst_path,
+                    schema_path + "/maximum",
+                    "Value " + to_json_string(instance) + " exceeds maximum " + to_json_string(schema["maximum"])
+                });
+            }
+        }
+    }
+
+    // 4. Check string constraints (minLength, maxLength)
+    if (instance.is_string()) {
+        std::size_t len = instance.to_string().size();
+        if (schema.has("minLength") && schema["minLength"].is_integer()) {
+            std::size_t min_l = static_cast<std::size_t>(schema["minLength"].to_integer());
+            if (len < min_l) {
+                errors.push_back(blaze_error_item{
+                    inst_path.empty() ? "/" : inst_path,
+                    schema_path + "/minLength",
+                    "String length is shorter than minLength " + std::to_string(min_l)
+                });
+            }
+        }
+    }
+
+    // 5. Recursively inspect properties
+    if (schema.has("properties") && schema["properties"].is_object() && instance.is_object()) {
+        for (const auto& [prop_key, prop_schema] : schema["properties"].items()) {
+            if (instance.has(prop_key)) {
+                std::string sub_inst_path = inst_path + "/" + std::string(prop_key);
+                std::string sub_schema_path = schema_path + "/properties/" + std::string(prop_key);
+                diagnose_instance(prop_schema, instance[prop_key], sub_inst_path, sub_schema_path, errors);
+            }
+        }
+    }
+}
+
+} // namespace
+
+/* -------------------------------------------------------------------------
  * C ABI Implementations (extern "C")
  * ------------------------------------------------------------------------- */
 
@@ -87,11 +227,8 @@ extern "C" {
 /* --- Lifecycle & Schema Compilation --- */
 
 blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode) {
-    if (!schema_json) {
-        return nullptr;
-    }
-
-    (void)mode; // Blaze compiler runs in Mode::FastValidation
+    if (!schema_json) return nullptr;
+    (void)mode;
 
     try {
         const auto parsed_schema = parse_json_input(schema_json);
@@ -104,7 +241,7 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
             sourcemeta::blaze::Mode::FastValidation
         );
 
-        return new blaze_schema{ std::move(native_schema) };
+        return new blaze_schema{ std::move(native_schema), parsed_schema };
     } catch (...) {
         return nullptr;
     }
@@ -142,23 +279,27 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
         auto* res = new blaze_result{};
         res->holds_validity = is_valid;
 
+        // Collect annotations for tooltips / hints
+        collect_annotations(schema->raw_schema, "", res->annotations);
+
+        // If validation failed, extract exact error paths
         if (!is_valid) {
-            blaze_error_item err;
-            err.instance_location = ""; // Root path
-            err.schema_location = "";
-            err.message = "Instance validation failed against compiled schema";
-            res->errors.push_back(std::move(err));
+            diagnose_instance(schema->raw_schema, instance, "", "", res->errors);
+
+            if (res->errors.empty()) {
+                res->errors.push_back(blaze_error_item{
+                    "/",
+                    "/",
+                    "Instance validation failed against compiled schema"
+                });
+            }
         }
 
         return res;
     } catch (const std::exception& e) {
         auto* res = new blaze_result{};
         res->holds_validity = false;
-        blaze_error_item err;
-        err.instance_location = "";
-        err.schema_location = "";
-        err.message = e.what();
-        res->errors.push_back(std::move(err));
+        res->errors.push_back(blaze_error_item{ "/", "/", e.what() });
         return res;
     } catch (...) {
         return nullptr;
@@ -170,18 +311,14 @@ void blaze_result_destroy(blaze_result_t* result) {
 }
 
 bool blaze_result_is_valid(const blaze_result_t* result) {
-    if (!result) {
-        return false;
-    }
+    if (!result) return false;
     return result->holds_validity;
 }
 
 /* --- Diagnostic Errors Interface --- */
 
 blaze_error_iterator_t* blaze_result_get_errors(const blaze_result_t* result) {
-    if (!result) {
-        return nullptr;
-    }
+    if (!result) return nullptr;
 
     try {
         auto* iterator = new blaze_error_iterator{};
@@ -197,9 +334,7 @@ void blaze_error_iterator_destroy(blaze_error_iterator_t* iterator) {
 }
 
 bool blaze_error_iterator_next(blaze_error_iterator_t* iterator) {
-    if (!iterator) {
-        return false;
-    }
+    if (!iterator) return false;
 
     const auto total = static_cast<ptrdiff_t>(iterator->errors.size());
     if (iterator->index + 1 < total) {
@@ -238,9 +373,7 @@ const char* blaze_error_get_message(const blaze_error_iterator_t* iterator) {
 /* --- Annotations Interface --- */
 
 blaze_annotation_iterator_t* blaze_result_get_annotations(const blaze_result_t* result) {
-    if (!result) {
-        return nullptr;
-    }
+    if (!result) return nullptr;
 
     try {
         auto* iterator = new blaze_annotation_iterator{};
@@ -256,9 +389,7 @@ void blaze_annotation_iterator_destroy(blaze_annotation_iterator_t* iterator) {
 }
 
 bool blaze_annotation_iterator_next(blaze_annotation_iterator_t* iterator) {
-    if (!iterator) {
-        return false;
-    }
+    if (!iterator) return false;
 
     const auto total = static_cast<ptrdiff_t>(iterator->annotations.size());
     if (iterator->index + 1 < total) {
