@@ -68,6 +68,9 @@ BLAZE_API const char* blaze_annotation_get_instance_location(const blaze_annotat
 BLAZE_API const char* blaze_annotation_get_keyword(const blaze_annotation_iterator_t* iterator);
 BLAZE_API const char* blaze_annotation_get_value_json(const blaze_annotation_iterator_t* iterator);
 
+/* --- Diagnostic / Debug Control --- */
+BLAZE_API void blaze_set_debug_logging(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif
