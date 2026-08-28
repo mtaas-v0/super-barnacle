@@ -1,11 +1,23 @@
 cmake_minimum_required(VERSION 3.22)
 project(blaze_c LANGUAGES C CXX)
 
-# Require C++23 for std::unreachable, std::to_underlying, and if consteval
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# MSVC specific standard and conformance flags
+# ----------------------------------------------------------------------
+# 1. Target Windows 10+ and Inject Missing MinGW HKDF Definitions
+# ----------------------------------------------------------------------
+if(WIN32)
+    add_compile_definitions(
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        NTDDI_VERSION=0x0A000007
+    )
+    
+#        NOMINMAX
+#        WIN32_LEAN_AND_MEAN
+endif()
+
 if(MSVC)
     add_compile_options(
         /std:c++latest
@@ -16,19 +28,39 @@ if(MSVC)
     )
 endif()
 
-if(WIN32)
-    add_compile_definitions(
-        _WIN32_WINNT=0x0A00
-        WINVER=0x0A00
-        NTDDI_VERSION=0x0A000007
-    )
+# Fix for Ubuntu 22.04 MinGW missing Windows 10 RS4 HKDF definitions in <bcrypt.h>
+if(MINGW)
+    set(MINGW_BCRYPT_COMPAT "${CMAKE_CURRENT_BINARY_DIR}/mingw_bcrypt_compat.h")
+    file(WRITE "${MINGW_BCRYPT_COMPAT}" [==[
+#pragma once
+#ifndef BCRYPT_HKDF_ALGORITHM
+#define BCRYPT_HKDF_ALGORITHM L"HKDF"
+#endif
+#ifndef BCRYPT_HKDF_HASH_ALGORITHM
+#define BCRYPT_HKDF_HASH_ALGORITHM L"HkdfHashAlgorithm"
+#endif
+#ifndef BCRYPT_HKDF_PRK_AND_FINALIZE
+#define BCRYPT_HKDF_PRK_AND_FINALIZE L"HkdfPrkAndFinalize"
+#endif
+#ifndef BCRYPT_HKDF_SALT_AND_FINALIZE
+#define BCRYPT_HKDF_SALT_AND_FINALIZE L"HkdfSaltAndFinalize"
+#endif
+#ifndef KDF_HKDF_INFO
+#define KDF_HKDF_INFO 0x14
+#endif
+#ifndef KDF_HKDF_SALT
+#define KDF_HKDF_SALT 0x13
+#endif
+]==])
 
-    # NOMINMAX
-    # WIN32_LEAN_AND_MEAN
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:CXX>:-include${MINGW_BCRYPT_COMPAT}>
+        $<$<COMPILE_LANGUAGE:C>:-include${MINGW_BCRYPT_COMPAT}>
+    )
 endif()
 
 # ----------------------------------------------------------------------
-# Fetch Sourcemeta Blaze & Apply Patches
+# 2. Fetch Sourcemeta Blaze & Apply Patches
 # ----------------------------------------------------------------------
 include(FetchContent)
 
@@ -47,7 +79,53 @@ FetchContent_GetProperties(blaze)
 if(NOT blaze_POPULATED)
     FetchContent_Populate(blaze)
 
-    # Patch numeric_uint128.h if present
+        # ------------------------------------------------------------------
+    # Automatically apply all patches from the ${CMAKE_CURRENT_SOURCE_DIR}/patches directory
+    # ------------------------------------------------------------------
+    file(GLOB BLAZE_PATCH_FILES 
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.diff" 
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch"
+    )
+
+    if(BLAZE_PATCH_FILES)
+        message(STATUS "==> Found ${BLAZE_PATCH_FILES} patch(es) in patches/")
+        message(STATUS "==> [Patch] Applying: blaze_SOURCE_DIR:${blaze_SOURCE_DIR}...")
+        foreach(PATCH_FILE IN LISTS BLAZE_PATCH_FILES)
+            get_filename_component(PATCH_NAME "${PATCH_FILE}" NAME)
+
+            # Check if patch is already applied (exit code 0 = already present)
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} apply --reverse --check "${PATCH_FILE}"
+                WORKING_DIRECTORY "${blaze_SOURCE_DIR}"
+                RESULT_VARIABLE PATCH_ALREADY_APPLIED
+                OUTPUT_QUIET
+                ERROR_QUIET
+            )
+
+            if(PATCH_ALREADY_APPLIED EQUAL 0)
+                message(STATUS "==> [Patch] Already applied: ${PATCH_NAME} (skipping)")
+            else()
+                message(STATUS "==> [Patch] Applying: ${PATCH_NAME}...")
+                execute_process(
+                    COMMAND ${GIT_EXECUTABLE} apply --ignore-whitespace --whitespace=nowarn "${PATCH_FILE}"
+                    WORKING_DIRECTORY "${blaze_SOURCE_DIR}"
+                    RESULT_VARIABLE PATCH_RESULT
+                    OUTPUT_VARIABLE PATCH_OUT
+                    ERROR_VARIABLE PATCH_ERR
+                )
+
+                if(NOT PATCH_RESULT EQUAL 0)
+                    message(FATAL_ERROR "==> [Patch] Failed to apply ${PATCH_NAME}!\nError:\n${PATCH_ERR}")
+                else()
+                    message(STATUS "==> [Patch] Successfully applied ${PATCH_NAME}")
+                endif()
+            endif()
+        endforeach()
+    else()
+        message(STATUS "==> No patch files found in patches/ directory.")
+    endif()
+
+    # Patch numeric_uint128.h for ARM64 if provided
     set(PATCHED_FILE "${CMAKE_CURRENT_SOURCE_DIR}/patched-numeric_uint128.h")
     set(TARGET_FILE  "${blaze_SOURCE_DIR}/vendor/core/src/lang/numeric/include/sourcemeta/core/numeric_uint128.h")
     if(EXISTS "${PATCHED_FILE}")
@@ -61,12 +139,12 @@ endif()
 set(BUILD_TESTING ${BUILD_TESTING_SAVED} CACHE BOOL "" FORCE)
 
 # ----------------------------------------------------------------------
-# Include Paths
+# 3. Include Directories
 # ----------------------------------------------------------------------
 file(GLOB BLAZE_INTERNAL_INCLUDES "${blaze_SOURCE_DIR}/src/*/include")
 
 # ----------------------------------------------------------------------
-# Target Library
+# 4. Target Library
 # ----------------------------------------------------------------------
 add_library(blaze_c SHARED
     blaze_c.cpp
@@ -81,7 +159,6 @@ target_include_directories(blaze_c
         ${BLAZE_INTERNAL_INCLUDES}
         ${blaze_SOURCE_DIR}/include
         ${blaze_SOURCE_DIR}/vendor/core/src/json/include
-        ${blaze_SOURCE_DIR}/vendor/core/src/schema/include
         ${blaze_SOURCE_DIR}/vendor/core/include
 )
 
@@ -103,7 +180,7 @@ if(MINGW)
 endif()
 
 # ----------------------------------------------------------------------
-# Installation Rules & Tests
+# 5. Installation Rules & Test Target
 # ----------------------------------------------------------------------
 install(TARGETS blaze_c
     RUNTIME DESTINATION bin

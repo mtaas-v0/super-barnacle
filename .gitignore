@@ -44,3 +44,5 @@ subprojects/
 *.log
 compile_commands.json
 .cache/
+
+patched-temp/

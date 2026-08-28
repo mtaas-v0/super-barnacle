@@ -1,13 +1,12 @@
 #include "blaze_c.h"
 
-// Blaze headers
+// Blaze modules (defines compiler, evaluator, schema_walker, schema_resolver, default_schema_compiler)
 #include <sourcemeta/blaze/compiler.h>
 #include <sourcemeta/blaze/evaluator.h>
 #include <sourcemeta/blaze/foundation.h>
 
-// Sourcemeta Core headers
+// Sourcemeta Core JSON AST
 #include <sourcemeta/core/json.h>
-#include <sourcemeta/core/schema.h>
 
 #include <cstddef>
 #include <memory>
@@ -19,13 +18,36 @@
 #include <vector>
 
 /* -------------------------------------------------------------------------
+ * Robust JSON Parsing Helper
+ * ------------------------------------------------------------------------- */
+
+namespace {
+
+inline sourcemeta::core::JSON parse_json_input(const char* input) {
+    return sourcemeta::core::parse_json(input);
+}
+
+template <typename T>
+std::string to_string_universal(const T& val) {
+    if constexpr (std::is_convertible_v<T, std::string_view>) {
+        return std::string(std::string_view(val));
+    } else {
+        std::ostringstream stream;
+        stream << val;
+        return stream.str();
+    }
+}
+
+} // namespace
+
+/* -------------------------------------------------------------------------
  * Type Deduction for In-Tree Blaze Return Types
  * ------------------------------------------------------------------------- */
 
 using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
     std::declval<sourcemeta::core::JSON>(),
-    sourcemeta::core::schema_walker,
-    sourcemeta::core::schema_resolver,
+    sourcemeta::blaze::schema_walker,
+    sourcemeta::blaze::schema_resolver,
     sourcemeta::blaze::default_schema_compiler,
     sourcemeta::blaze::Mode::FastValidation
 ));
@@ -75,25 +97,6 @@ struct blaze_annotation_iterator {
 };
 
 /* -------------------------------------------------------------------------
- * Stringifier Helpers (MSVC Conforming)
- * ------------------------------------------------------------------------- */
-
-namespace {
-
-template <typename T>
-std::string to_string_universal(const T& val) {
-    if constexpr (std::is_convertible_v<T, std::string_view>) {
-        return std::string(std::string_view(val));
-    } else {
-        std::ostringstream stream;
-        stream << val;
-        return stream.str();
-    }
-}
-
-} // namespace
-
-/* -------------------------------------------------------------------------
  * C ABI Implementations (extern "C")
  * ------------------------------------------------------------------------- */
 
@@ -111,12 +114,12 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
             ? sourcemeta::blaze::Mode::FullDiagnostics
             : sourcemeta::blaze::Mode::FastValidation;
 
-        const auto parsed_schema = sourcemeta::core::JSON::parse(schema_json);
+        const auto parsed_schema = parse_json_input(schema_json);
 
         auto native_schema = sourcemeta::blaze::compile(
             parsed_schema,
-            sourcemeta::core::schema_walker,
-            sourcemeta::core::schema_resolver,
+            sourcemeta::blaze::schema_walker,
+            sourcemeta::blaze::schema_resolver,
             sourcemeta::blaze::default_schema_compiler,
             native_mode
         );
@@ -153,7 +156,7 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
     }
 
     try {
-        const auto instance = sourcemeta::core::JSON::parse(instance_json);
+        const auto instance = parse_json_input(instance_json);
         auto native_res = evaluator->obj.validate(schema->obj, instance);
         const bool is_valid = static_cast<bool>(native_res);
 
