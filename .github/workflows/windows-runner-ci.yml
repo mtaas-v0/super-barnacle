@@ -1,0 +1,95 @@
+name: CI - Windows Native MSVC (x64 & ARM64)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  # -----------------------------------------------------------------
+  # Job 1: Native Windows x64 Build & Test
+  # -----------------------------------------------------------------
+  build-and-test-msvc-x64:
+    name: Windows x64 (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (Visual Studio 17 2022 - x64)
+        run: |
+          cmake -B build-x64 `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=ON `
+            -DCMAKE_INSTALL_PREFIX=dist-x64
+
+      - name: Build & Install
+        run: |
+          cmake --build build-x64 --config Release --target install --parallel
+
+      - name: Run Native Unit Tests (CTest)
+        run: |
+          ctest --test-dir build-x64 -C Release --output-on-failure
+
+      - name: Stage Artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package-x64 | Out-Null
+          Copy-Item -Path "dist-x64/bin/*.dll" -Destination "package-x64/" -Force
+          Copy-Item -Path "dist-x64/lib/*.lib" -Destination "package-x64/" -Force
+          Copy-Item -Path "dist-x64/include/blaze_c.h" -Destination "package-x64/" -Force
+          Get-ChildItem -Path package-x64
+
+      - name: Upload Windows x64 MSVC Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: blaze-c-windows-msvc-x64
+          path: package-x64/
+          retention-days: 14
+
+  # -----------------------------------------------------------------
+  # Job 2: Windows ARM64 Cross-Compilation with MSVC
+  # -----------------------------------------------------------------
+  build-msvc-arm64:
+    name: Windows ARM64 (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (Visual Studio 17 2022 - ARM64)
+        run: |
+          cmake -B build-arm64 `
+            -G "Visual Studio 17 2022" `
+            -A ARM64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=OFF `
+            -DCMAKE_INSTALL_PREFIX=dist-arm64
+
+      - name: Build & Install
+        run: |
+          cmake --build build-arm64 --config Release --target install --parallel
+
+      - name: Stage Artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package-arm64 | Out-Null
+          Copy-Item -Path "dist-arm64/bin/*.dll" -Destination "package-arm64/" -Force
+          Copy-Item -Path "dist-arm64/lib/*.lib" -Destination "package-arm64/" -Force
+          Copy-Item -Path "dist-arm64/include/blaze_c.h" -Destination "package-arm64/" -Force
+          Get-ChildItem -Path package-arm64
+
+      - name: Upload Windows ARM64 MSVC Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: blaze-c-windows-msvc-arm64
+          path: package-arm64/
+          retention-days: 14
+
+          

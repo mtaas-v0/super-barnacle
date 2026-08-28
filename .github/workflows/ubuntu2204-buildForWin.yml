@@ -1,10 +1,6 @@
 name: CI - Build Windows DLL on Ubuntu 22.04
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
