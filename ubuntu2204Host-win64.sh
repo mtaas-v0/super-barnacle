@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Default options
 TARGET="windows"
 BUILD_TYPE="Release"
 CLEAN=false
@@ -14,15 +13,14 @@ Usage: ./build.sh [OPTIONS]
 
 Options:
     -t, --target <windows|linux|all>   Target platform to build (default: windows)
-    -c, --clean                        Wipe build and dist directories before building
-    -d, --deps                         Install required APT dependencies (requires sudo)
+    -c, --clean                        Wipe build and dist directories
+    -d, --deps                         Install required APT dependencies
     -b, --build-type <Release|Debug>   Build configuration (default: Release)
     -j, --jobs <N>                     Number of parallel build jobs (default: $(nproc))
     -h, --help                         Show this help message
 EOF
 }
 
-# Parse command-line arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -t|--target)
@@ -57,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Step 0: Install dependencies if requested
+# Step 0: Dependencies
 if [ "$INSTALL_DEPS" = true ]; then
     echo "==> Installing system dependencies via APT..."
     sudo apt-get update
@@ -70,19 +68,40 @@ if [ "$INSTALL_DEPS" = true ]; then
         g++-mingw-w64-x86-64-posix \
         gcc-mingw-w64-x86-64-posix
 
-    # Ensure MinGW uses POSIX threads alternative for C++20 standard library support
     sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
     sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
 fi
 
-# Clean builds if requested
 if [ "$CLEAN" = true ]; then
     echo "==> Cleaning previous build directories..."
-    rm -rf build-windows build-linux dist package
+    rm -rf build-host build-windows build-linux dist package
 fi
 
-# Function: Build Windows Target (.dll)
+# Step 1: Bootstrap native host codegen tool
+bootstrap_host_tools() {
+    echo "==> [Host Tools] Building native sourcemeta_core_unicode_codegen on Linux..."
+    cmake -B build-host -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=OFF
+
+    cmake --build build-host --target sourcemeta_core_unicode_codegen -j "${NUM_JOBS}"
+
+    # Locate the compiled host binary and prepend to PATH
+    HOST_TOOL_PATH=$(find "$(pwd)/build-host" -name "sourcemeta_core_unicode_codegen" -type f -perm /111 | head -n 1)
+    if [ -n "${HOST_TOOL_PATH}" ]; then
+        HOST_TOOL_DIR=$(dirname "${HOST_TOOL_PATH}")
+        export PATH="${HOST_TOOL_DIR}:${PATH}"
+        echo "==> [Host Tools] Registered on PATH: ${HOST_TOOL_DIR}"
+    else
+        echo "Error: Failed to build host sourcemeta_core_unicode_codegen"
+        exit 1
+    fi
+}
+
+# Step 2: Cross-compile Windows Target (.dll)
 build_windows() {
+    bootstrap_host_tools
+
     echo "==> [Windows DLL] Configuring CMake with MinGW toolchain..."
     cmake -B build-windows -G Ninja \
         -DCMAKE_SYSTEM_NAME=Windows \
@@ -102,7 +121,7 @@ build_windows() {
     echo "==> [Windows DLL] Successfully packaged in ./package/windows/"
 }
 
-# Function: Build Linux Target (.so)
+# Step 3: Build Linux Target (.so)
 build_linux() {
     echo "==> [Linux Shared Object] Configuring CMake..."
     cmake -B build-linux -G Ninja \
@@ -119,7 +138,6 @@ build_linux() {
     echo "==> [Linux Shared Object] Successfully packaged in ./package/linux/"
 }
 
-# Execution Dispatcher
 case "$TARGET" in
     windows)
         build_windows
@@ -132,7 +150,7 @@ case "$TARGET" in
         build_linux
         ;;
     *)
-        echo "Error: Invalid target '$TARGET'. Use 'windows', 'linux', or 'all'."
+        echo "Error: Invalid target '$TARGET'"
         exit 1
         ;;
 esac

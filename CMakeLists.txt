@@ -5,32 +5,72 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
+
 FetchContent_Declare(
     blaze
     GIT_REPOSITORY https://github.com/sourcemeta/blaze.git
     GIT_TAG        main
 )
-FetchContent_MakeAvailable(blaze)
 
-# Shared library
+# ----------------------------------------------------------------------
+# Prevent upstream dependencies from building their POSIX test/CLI harnesses
+# ----------------------------------------------------------------------
+set(BUILD_TESTING_SAVED ${BUILD_TESTING})
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(SOURCEMETA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SOURCEMETA_BUILD_CLI OFF CACHE BOOL "" FORCE)
+
+FetchContent_GetProperties(blaze)
+if(NOT blaze_POPULATED)
+    FetchContent_Populate(blaze)
+    # EXCLUDE_FROM_ALL ensures only targets needed by blaze_c are built
+    add_subdirectory(${blaze_SOURCE_DIR} ${blaze_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
+
+# Restore BUILD_TESTING for our own test suite
+set(BUILD_TESTING ${BUILD_TESTING_SAVED} CACHE BOOL "" FORCE)
+
+# ----------------------------------------------------------------------
+# Header Search Paths from Fetched Submodules
+# ----------------------------------------------------------------------
+file(GLOB BLAZE_INTERNAL_INCLUDES "${blaze_SOURCE_DIR}/src/*/include")
+
+# ----------------------------------------------------------------------
+# C Wrapper Shared Library
+# ----------------------------------------------------------------------
 add_library(blaze_c SHARED
     blaze_c.cpp
     blaze_c.h
 )
 
-target_include_directories(blaze_c PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>
+target_include_directories(blaze_c
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${BLAZE_INTERNAL_INCLUDES}
+        ${blaze_SOURCE_DIR}/include
+        ${blaze_SOURCE_DIR}/vendor/core/src/json/include
+        ${blaze_SOURCE_DIR}/vendor/core/include
 )
 
 target_compile_definitions(blaze_c PRIVATE BLAZE_BUILD_DLL)
-target_link_libraries(blaze_c PRIVATE sourcemeta::blaze)
+
+# Link only the validation submodules
+target_link_libraries(blaze_c PRIVATE
+    sourcemeta_blaze_compiler
+    sourcemeta_blaze_evaluator
+    sourcemeta_blaze_foundation
+    sourcemeta_core
+)
 
 if(MINGW)
     target_link_options(blaze_c PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
-# Installation rules
+# ----------------------------------------------------------------------
+# Installation Rules
+# ----------------------------------------------------------------------
 install(TARGETS blaze_c
     RUNTIME DESTINATION bin
     ARCHIVE DESTINATION lib
@@ -38,7 +78,9 @@ install(TARGETS blaze_c
 )
 install(FILES blaze_c.h DESTINATION include)
 
-# --- Test Target ---
+# ----------------------------------------------------------------------
+# Wrapper Test Executable
+# ----------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
     add_executable(test_blaze_c examples/main.c)
@@ -46,7 +88,6 @@ if(BUILD_TESTING)
     target_include_directories(test_blaze_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     if(WIN32)
-        # Ensure executable finds the DLL in the same folder during tests
         set_target_properties(test_blaze_c PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
         )

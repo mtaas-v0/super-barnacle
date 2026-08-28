@@ -1,8 +1,13 @@
 #include "blaze_c.h"
 
-#include <sourcemeta/blaze/blaze.hpp>
-#include <sourcemeta/jsontoolkit/json.hpp>
 
+// Blaze modules
+#include <sourcemeta/blaze/compiler.h>
+#include <sourcemeta/blaze/evaluator.h>
+#include <sourcemeta/blaze/foundation.h>
+
+// Sourcemeta Core JSON AST
+#include <sourcemeta/core/json.h>
 #include <cstddef>
 #include <memory>
 #include <sstream>
