@@ -19,13 +19,38 @@
 #include <vector>
 
 /* -------------------------------------------------------------------------
- * Internal Utility & Type Deduction
+ * Internal Utility & Safe JSON Access Helpers
  * ------------------------------------------------------------------------- */
 
 namespace {
 
 inline sourcemeta::core::JSON parse_json_input(const char* input) {
     return sourcemeta::core::parse_json(input);
+}
+
+inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key) {
+    if (!val.is_object()) return false;
+    try {
+        if constexpr (requires { val.contains(key); }) {
+            return val.contains(key);
+        } else if constexpr (requires { val.find(key); }) {
+            return val.find(key) != val.end();
+        } else {
+            (void)val.at(key);
+            return true;
+        }
+    } catch (...) {
+        return false;
+    }
+}
+
+inline const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& val, std::string_view key) {
+    if (!val.is_object()) return nullptr;
+    try {
+        return &val.at(key);
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 std::string json_type_name(const sourcemeta::core::JSON& val) {
@@ -46,6 +71,10 @@ std::string to_json_string(const sourcemeta::core::JSON& val) {
 }
 
 } // namespace
+
+/* -------------------------------------------------------------------------
+ * Type Deduction for In-Tree Blaze Return Types
+ * ------------------------------------------------------------------------- */
 
 using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
     std::declval<sourcemeta::core::JSON>(),
@@ -108,19 +137,23 @@ void collect_annotations(const sourcemeta::core::JSON& schema,
     if (!schema.is_object()) return;
 
     for (const auto& keyword : {"title", "description", "default", "examples"}) {
-        if (schema.has(keyword)) {
+        if (const auto* val = json_try_get(schema, keyword)) {
             annotations.push_back(blaze_annotation_item{
                 current_path,
                 keyword,
-                to_json_string(schema[keyword])
+                to_json_string(*val)
             });
         }
     }
 
-    if (schema.has("properties") && schema["properties"].is_object()) {
-        for (const auto& [prop_key, prop_schema] : schema["properties"].items()) {
-            std::string subpath = current_path + "/" + std::string(prop_key);
-            collect_annotations(prop_schema, subpath, annotations);
+    if (const auto* props = json_try_get(schema, "properties")) {
+        if (props->is_object()) {
+            try {
+                for (const auto& [prop_key, prop_schema] : *props) {
+                    std::string subpath = current_path + "/" + std::string(prop_key);
+                    collect_annotations(prop_schema, subpath, annotations);
+                }
+            } catch (...) {}
         }
     }
 }
@@ -133,33 +166,39 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
     if (!schema.is_object()) return;
 
     // 1. Check type assertion
-    if (schema.has("type") && schema["type"].is_string()) {
-        std::string expected_type = schema["type"].to_string();
-        std::string actual_type = json_type_name(instance);
+    if (const auto* type_node = json_try_get(schema, "type")) {
+        if (type_node->is_string()) {
+            std::string expected_type = type_node->to_string();
+            std::string actual_type = json_type_name(instance);
 
-        bool type_match = (expected_type == actual_type) ||
-                          (expected_type == "number" && actual_type == "integer");
+            bool type_match = (expected_type == actual_type) ||
+                              (expected_type == "number" && actual_type == "integer");
 
-        if (!type_match) {
-            errors.push_back(blaze_error_item{
-                inst_path.empty() ? "/" : inst_path,
-                schema_path + "/type",
-                "Expected type '" + expected_type + "', but found " + actual_type
-            });
-            return;
+            if (!type_match) {
+                errors.push_back(blaze_error_item{
+                    inst_path.empty() ? "/" : inst_path,
+                    schema_path + "/type",
+                    "Expected type '" + expected_type + "', but found " + actual_type
+                });
+                return;
+            }
         }
     }
 
     // 2. Check required properties (for objects)
-    if (schema.has("required") && schema["required"].is_array() && instance.is_object()) {
-        for (std::size_t i = 0; i < schema["required"].size(); ++i) {
-            std::string req_key = schema["required"][i].to_string();
-            if (!instance.has(req_key)) {
-                errors.push_back(blaze_error_item{
-                    inst_path + "/" + req_key,
-                    schema_path + "/required",
-                    "Missing required property '" + req_key + "'"
-                });
+    if (const auto* req_node = json_try_get(schema, "required")) {
+        if (req_node->is_array() && instance.is_object()) {
+            for (std::size_t i = 0; i < req_node->size(); ++i) {
+                try {
+                    std::string req_key = req_node->at(i).to_string();
+                    if (!json_has_key(instance, req_key)) {
+                        errors.push_back(blaze_error_item{
+                            inst_path + "/" + req_key,
+                            schema_path + "/required",
+                            "Missing required property '" + req_key + "'"
+                        });
+                    }
+                } catch (...) {}
             }
         }
     }
@@ -167,51 +206,57 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
     // 3. Check numeric constraints (minimum, maximum)
     if (instance.is_integer() || instance.is_real()) {
         double val = instance.is_integer() ? static_cast<double>(instance.to_integer()) : instance.to_real();
-        if (schema.has("minimum")) {
-            double min_val = schema["minimum"].is_integer() ? static_cast<double>(schema["minimum"].to_integer()) : schema["minimum"].to_real();
+        if (const auto* min_node = json_try_get(schema, "minimum")) {
+            double min_val = min_node->is_integer() ? static_cast<double>(min_node->to_integer()) : min_node->to_real();
             if (val < min_val) {
                 errors.push_back(blaze_error_item{
                     inst_path.empty() ? "/" : inst_path,
                     schema_path + "/minimum",
-                    "Value " + to_json_string(instance) + " is less than minimum " + to_json_string(schema["minimum"])
+                    "Value " + to_json_string(instance) + " is less than minimum " + to_json_string(*min_node)
                 });
             }
         }
-        if (schema.has("maximum")) {
-            double max_val = schema["maximum"].is_integer() ? static_cast<double>(schema["maximum"].to_integer()) : schema["maximum"].to_real();
+        if (const auto* max_node = json_try_get(schema, "maximum")) {
+            double max_val = max_node->is_integer() ? static_cast<double>(max_node->to_integer()) : max_node->to_real();
             if (val > max_val) {
                 errors.push_back(blaze_error_item{
                     inst_path.empty() ? "/" : inst_path,
                     schema_path + "/maximum",
-                    "Value " + to_json_string(instance) + " exceeds maximum " + to_json_string(schema["maximum"])
+                    "Value " + to_json_string(instance) + " exceeds maximum " + to_json_string(*max_node)
                 });
             }
         }
     }
 
-    // 4. Check string constraints (minLength, maxLength)
+    // 4. Check string constraints (minLength)
     if (instance.is_string()) {
         std::size_t len = instance.to_string().size();
-        if (schema.has("minLength") && schema["minLength"].is_integer()) {
-            std::size_t min_l = static_cast<std::size_t>(schema["minLength"].to_integer());
-            if (len < min_l) {
-                errors.push_back(blaze_error_item{
-                    inst_path.empty() ? "/" : inst_path,
-                    schema_path + "/minLength",
-                    "String length is shorter than minLength " + std::to_string(min_l)
-                });
+        if (const auto* min_l_node = json_try_get(schema, "minLength")) {
+            if (min_l_node->is_integer()) {
+                std::size_t min_l = static_cast<std::size_t>(min_l_node->to_integer());
+                if (len < min_l) {
+                    errors.push_back(blaze_error_item{
+                        inst_path.empty() ? "/" : inst_path,
+                        schema_path + "/minLength",
+                        "String length is shorter than minLength " + std::to_string(min_l)
+                    });
+                }
             }
         }
     }
 
     // 5. Recursively inspect properties
-    if (schema.has("properties") && schema["properties"].is_object() && instance.is_object()) {
-        for (const auto& [prop_key, prop_schema] : schema["properties"].items()) {
-            if (instance.has(prop_key)) {
-                std::string sub_inst_path = inst_path + "/" + std::string(prop_key);
-                std::string sub_schema_path = schema_path + "/properties/" + std::string(prop_key);
-                diagnose_instance(prop_schema, instance[prop_key], sub_inst_path, sub_schema_path, errors);
-            }
+    if (const auto* props = json_try_get(schema, "properties")) {
+        if (props->is_object() && instance.is_object()) {
+            try {
+                for (const auto& [prop_key, prop_schema] : *props) {
+                    if (const auto* inst_val = json_try_get(instance, prop_key)) {
+                        std::string sub_inst_path = inst_path + "/" + std::string(prop_key);
+                        std::string sub_schema_path = schema_path + "/properties/" + std::string(prop_key);
+                        diagnose_instance(prop_schema, *inst_val, sub_inst_path, sub_schema_path, errors);
+                    }
+                }
+            } catch (...) {}
         }
     }
 }
@@ -279,7 +324,7 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
         auto* res = new blaze_result{};
         res->holds_validity = is_valid;
 
-        // Collect annotations for tooltips / hints
+        // Collect annotations for form tooltips
         collect_annotations(schema->raw_schema, "", res->annotations);
 
         // If validation failed, extract exact error paths
