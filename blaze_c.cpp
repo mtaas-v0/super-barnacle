@@ -104,11 +104,8 @@ using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
  * ------------------------------------------------------------------------- */
 
 struct blaze_schema {
-    // 1. Permanent text storage
     std::string schema_str;
-    // 2. Permanent AST referencing schema_str
-    sourcemeta::core::JSON raw_schema;
-    // 3. Compiled instructions referencing raw_schema
+    std::unique_ptr<sourcemeta::core::JSON> raw_schema;
     std::unique_ptr<BlazeSchemaType> obj;
 };
 
@@ -294,15 +291,17 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
     try {
         auto schema = std::make_unique<blaze_schema>();
 
-        // 1. Copy the raw JSON string to own its heap memory permanently
+        // 1. Own raw string buffer permanently
         schema->schema_str = schema_json;
 
-        // 2. Parse the AST referencing the owned string buffer
-        schema->raw_schema = parse_json_input(schema->schema_str.c_str());
+        // 2. Allocate and parse AST into fixed heap storage
+        schema->raw_schema = std::make_unique<sourcemeta::core::JSON>(
+            parse_json_input(schema->schema_str.c_str())
+        );
 
-        // 3. Compile the schema against the owned AST
+        // 3. Compile against heap AST
         auto compiled = sourcemeta::blaze::compile(
-            schema->raw_schema,
+            *(schema->raw_schema),
             sourcemeta::blaze::schema_walker,
             sourcemeta::blaze::schema_resolver,
             sourcemeta::blaze::default_schema_compiler,
@@ -338,7 +337,7 @@ void blaze_evaluator_destroy(blaze_evaluator_t* evaluator) {
 blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
                                          const blaze_schema_t* schema,
                                          const char* instance_json) {
-    if (!evaluator || !schema || !schema->obj || !instance_json) {
+    if (!evaluator || !schema || !schema->obj || !schema->raw_schema || !instance_json) {
         return nullptr;
     }
 
@@ -350,11 +349,11 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
         res->holds_validity = is_valid;
 
         // Collect annotations for form tooltips
-        collect_annotations(schema->raw_schema, "", res->annotations);
+        collect_annotations(*(schema->raw_schema), "", res->annotations);
 
         // If validation failed, extract exact error paths
         if (!is_valid) {
-            diagnose_instance(schema->raw_schema, instance, "", "", res->errors);
+            diagnose_instance(*(schema->raw_schema), instance, "", "", res->errors);
 
             if (res->errors.empty()) {
                 res->errors.push_back(blaze_error_item{
