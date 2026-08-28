@@ -1,0 +1,58 @@
+name: CI - Build Windows DLL on Ubuntu 22.04
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-dll:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install MinGW and Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            mingw-w64 \
+            g++-mingw-w64-x86-64-posix \
+            gcc-mingw-w64-x86-64-posix
+
+          # Ensure the POSIX threads alternative is default for C++20 support
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+
+      - name: Configure CMake (Cross-Compile with MinGW)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=dist
+
+      - name: Build and Install Artifacts
+        run: |
+          cmake --build build --config Release --target install
+
+      - name: Stage Artifacts Directory
+        run: |
+          mkdir -p package
+          # Copy DLL, import library (.dll.a / .lib), and header
+          cp dist/bin/libblaze_c.dll package/blaze_c.dll 2>/dev/null || cp dist/bin/*.dll package/
+          cp dist/lib/*.a package/ 2>/dev/null || true
+          cp dist/include/blaze_c.h package/
+
+      - name: Upload DLL and Header Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: blaze-c-windows-x86_64
+          path: package/
+          retention-days: 2

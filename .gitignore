@@ -1,0 +1,46 @@
+# Prerequisites / Compilation Outputs
+*.o
+*.obj
+*.so
+*.so.*
+*.dylib
+*.dll
+*.dll.a
+*.lib
+*.exp
+*.a
+*.exe
+
+# CMake Build Directories & Cache
+build/
+build-*/
+dist/
+package/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+CMakeUserPresets.json
+
+# FetchContent / External Dependencies
+_deps/
+subprojects/
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and Diagnostics
+*.log
+compile_commands.json
+.cache/
