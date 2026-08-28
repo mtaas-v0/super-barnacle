@@ -1,6 +1,6 @@
---- ./vendor/core/cmake/common/targets/googlebenchmark.cmake 2026-08-28 06:41:58.923635564 +0000
-+++ ./vendor/core/cmake/common/targets/googlebenchmark.cmake 2026-08-28 06:53:06.415647584 +0000
-@@ -20,7 +20,12 @@
+--- ./vendor/core/cmake/common/targets/googlebenchmark.cmake	2026-08-28 07:13:55.971670086 +0000
++++ ./vendor/core/cmake/common/targets/googlebenchmark.cmake	2026-08-28 07:14:41.860670912 +0000
+@@ -20,9 +20,14 @@
    add_executable("${TARGET_NAME}" ${SOURCEMETA_GOOGLEBENCHMARK_SOURCES})
    sourcemeta_add_default_options(PRIVATE ${TARGET_NAME})
    if(SOURCEMETA_COMPILER_MSVC)
@@ -14,3 +14,7 @@
    endif()
    set_target_properties("${TARGET_NAME}" PROPERTIES FOLDER "${FOLDER_NAME}")
    target_link_libraries("${TARGET_NAME}" PRIVATE benchmark::benchmark)
+   target_link_libraries("${TARGET_NAME}" PRIVATE benchmark::benchmark_main)
+-endfunction()
++endfunction()
+\ No newline at end of file
