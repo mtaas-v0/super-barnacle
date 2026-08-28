@@ -41,6 +41,33 @@ inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key
     return json_try_get(val, key) != nullptr;
 }
 
+std::string to_json_string(const sourcemeta::core::JSON& val) {
+    std::ostringstream ss;
+    ss << val;
+    return ss.str();
+}
+
+// Extracts a string value without enclosing JSON quotes
+std::string clean_string(const sourcemeta::core::JSON& val) {
+    if (!val.is_string()) return "";
+    std::string s;
+    try {
+        s = val.to_string();
+    } catch (...) {
+        s = to_json_string(val);
+    }
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+double clean_number(const sourcemeta::core::JSON& val) {
+    if (val.is_integer()) return static_cast<double>(val.to_integer());
+    if (val.is_real()) return val.to_real();
+    return 0.0;
+}
+
 std::string json_type_name(const sourcemeta::core::JSON& val) {
     if (val.is_null()) return "null";
     if (val.is_boolean()) return "boolean";
@@ -50,12 +77,6 @@ std::string json_type_name(const sourcemeta::core::JSON& val) {
     if (val.is_array()) return "array";
     if (val.is_object()) return "object";
     return "unknown";
-}
-
-std::string to_json_string(const sourcemeta::core::JSON& val) {
-    std::ostringstream ss;
-    ss << val;
-    return ss.str();
 }
 
 } // namespace
@@ -139,7 +160,7 @@ void collect_annotations(const sourcemeta::core::JSON& schema,
     if (props && props->is_object() && req_node && req_node->is_array()) {
         for (std::size_t i = 0; i < req_node->size(); ++i) {
             try {
-                std::string prop_key = req_node->at(i).to_string();
+                std::string prop_key = clean_string(req_node->at(i));
                 if (const auto* prop_schema = json_try_get(*props, prop_key)) {
                     std::string subpath = current_path + "/" + prop_key;
                     collect_annotations(*prop_schema, subpath, annotations);
@@ -159,7 +180,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
     // 1. Check type assertion
     if (const auto* type_node = json_try_get(schema, "type")) {
         if (type_node->is_string()) {
-            std::string expected_type = type_node->to_string();
+            std::string expected_type = clean_string(*type_node);
             std::string actual_type = json_type_name(instance);
 
             bool type_match = (expected_type == actual_type) ||
@@ -176,14 +197,14 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
         }
     }
 
-    // 2. Check required properties and inspect children
+    // 2. Check required properties and inspect child properties
     const auto* req_node = json_try_get(schema, "required");
     const auto* props = json_try_get(schema, "properties");
 
     if (req_node && req_node->is_array() && instance.is_object()) {
         for (std::size_t i = 0; i < req_node->size(); ++i) {
             try {
-                std::string req_key = req_node->at(i).to_string();
+                std::string req_key = clean_string(req_node->at(i));
                 if (!json_has_key(instance, req_key)) {
                     errors.push_back(blaze_error_item{
                         inst_path + "/" + req_key,
@@ -205,9 +226,9 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
 
     // 3. Check numeric constraints (minimum, maximum)
     if (instance.is_integer() || instance.is_real()) {
-        double val = instance.is_integer() ? static_cast<double>(instance.to_integer()) : instance.to_real();
+        double val = clean_number(instance);
         if (const auto* min_node = json_try_get(schema, "minimum")) {
-            double min_val = min_node->is_integer() ? static_cast<double>(min_node->to_integer()) : min_node->to_real();
+            double min_val = clean_number(*min_node);
             if (val < min_val) {
                 errors.push_back(blaze_error_item{
                     inst_path.empty() ? "/" : inst_path,
@@ -217,7 +238,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
             }
         }
         if (const auto* max_node = json_try_get(schema, "maximum")) {
-            double max_val = max_node->is_integer() ? static_cast<double>(max_node->to_integer()) : max_node->to_real();
+            double max_val = clean_number(*max_node);
             if (val > max_val) {
                 errors.push_back(blaze_error_item{
                     inst_path.empty() ? "/" : inst_path,
@@ -230,7 +251,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
 
     // 4. Check string constraints (minLength)
     if (instance.is_string()) {
-        std::size_t len = instance.to_string().size();
+        std::size_t len = clean_string(instance).size();
         if (const auto* min_l_node = json_try_get(schema, "minLength")) {
             if (min_l_node->is_integer()) {
                 std::size_t min_l = static_cast<std::size_t>(min_l_node->to_integer());
