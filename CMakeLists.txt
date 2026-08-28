@@ -1,9 +1,34 @@
 cmake_minimum_required(VERSION 3.22)
 project(blaze_c LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+# Require C++23 for std::unreachable, std::to_underlying, and if consteval
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# MSVC specific standard and conformance flags
+if(MSVC)
+    add_compile_options(
+        /std:c++latest
+        /EHsc
+        /Zc:__cplusplus
+        /permissive-
+        /utf-8
+    )
+endif()
+
+if(WIN32)
+    add_compile_definitions(
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        NTDDI_VERSION=0x0A000007
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+endif()
+
+# ----------------------------------------------------------------------
+# Fetch Sourcemeta Blaze & Apply Patches
+# ----------------------------------------------------------------------
 include(FetchContent)
 
 FetchContent_Declare(
@@ -12,9 +37,6 @@ FetchContent_Declare(
     GIT_TAG        main
 )
 
-# ----------------------------------------------------------------------
-# Prevent upstream dependencies from building their POSIX test/CLI harnesses
-# ----------------------------------------------------------------------
 set(BUILD_TESTING_SAVED ${BUILD_TESTING})
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(SOURCEMETA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -23,20 +45,27 @@ set(SOURCEMETA_BUILD_CLI OFF CACHE BOOL "" FORCE)
 FetchContent_GetProperties(blaze)
 if(NOT blaze_POPULATED)
     FetchContent_Populate(blaze)
-    # EXCLUDE_FROM_ALL ensures only targets needed by blaze_c are built
+
+    # Patch numeric_uint128.h if present
+    set(PATCHED_FILE "${CMAKE_CURRENT_SOURCE_DIR}/patched-numeric_uint128.h")
+    set(TARGET_FILE  "${blaze_SOURCE_DIR}/vendor/core/src/lang/numeric/include/sourcemeta/core/numeric_uint128.h")
+    if(EXISTS "${PATCHED_FILE}")
+        message(STATUS "Applying patch: replacing numeric_uint128.h with patched-numeric_uint128.h")
+        configure_file("${PATCHED_FILE}" "${TARGET_FILE}" COPYONLY)
+    endif()
+
     add_subdirectory(${blaze_SOURCE_DIR} ${blaze_BINARY_DIR} EXCLUDE_FROM_ALL)
 endif()
 
-# Restore BUILD_TESTING for our own test suite
 set(BUILD_TESTING ${BUILD_TESTING_SAVED} CACHE BOOL "" FORCE)
 
 # ----------------------------------------------------------------------
-# Header Search Paths from Fetched Submodules
+# Include Paths
 # ----------------------------------------------------------------------
 file(GLOB BLAZE_INTERNAL_INCLUDES "${blaze_SOURCE_DIR}/src/*/include")
 
 # ----------------------------------------------------------------------
-# C Wrapper Shared Library
+# Target Library
 # ----------------------------------------------------------------------
 add_library(blaze_c SHARED
     blaze_c.cpp
@@ -51,12 +80,12 @@ target_include_directories(blaze_c
         ${BLAZE_INTERNAL_INCLUDES}
         ${blaze_SOURCE_DIR}/include
         ${blaze_SOURCE_DIR}/vendor/core/src/json/include
+        ${blaze_SOURCE_DIR}/vendor/core/src/schema/include
         ${blaze_SOURCE_DIR}/vendor/core/include
 )
 
 target_compile_definitions(blaze_c PRIVATE BLAZE_BUILD_DLL)
 
-# Link only the validation submodules
 target_link_libraries(blaze_c PRIVATE
     sourcemeta_blaze_compiler
     sourcemeta_blaze_evaluator
@@ -64,12 +93,16 @@ target_link_libraries(blaze_c PRIVATE
     sourcemeta_core
 )
 
+if(WIN32)
+    target_link_libraries(blaze_c PRIVATE bcrypt ws2_32)
+endif()
+
 if(MINGW)
     target_link_options(blaze_c PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
 # ----------------------------------------------------------------------
-# Installation Rules
+# Installation Rules & Tests
 # ----------------------------------------------------------------------
 install(TARGETS blaze_c
     RUNTIME DESTINATION bin
@@ -78,9 +111,6 @@ install(TARGETS blaze_c
 )
 install(FILES blaze_c.h DESTINATION include)
 
-# ----------------------------------------------------------------------
-# Wrapper Test Executable
-# ----------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
     add_executable(test_blaze_c examples/main.c)

@@ -1,27 +1,46 @@
 #include "blaze_c.h"
 
-
-// Blaze modules
+// Blaze headers
 #include <sourcemeta/blaze/compiler.h>
 #include <sourcemeta/blaze/evaluator.h>
 #include <sourcemeta/blaze/foundation.h>
 
-// Sourcemeta Core JSON AST
+// Sourcemeta Core headers
 #include <sourcemeta/core/json.h>
+#include <sourcemeta/core/schema.h>
+
 #include <cstddef>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 /* -------------------------------------------------------------------------
- * Internal Representation & Struct Definitions
+ * Type Deduction for In-Tree Blaze Return Types
+ * ------------------------------------------------------------------------- */
+
+using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
+    std::declval<sourcemeta::core::JSON>(),
+    sourcemeta::core::schema_walker,
+    sourcemeta::core::schema_resolver,
+    sourcemeta::blaze::default_schema_compiler,
+    sourcemeta::blaze::Mode::FastValidation
+));
+
+using BlazeResultType = decltype(std::declval<sourcemeta::blaze::Evaluator>().validate(
+    std::declval<BlazeSchemaType>(),
+    std::declval<sourcemeta::core::JSON>()
+));
+
+/* -------------------------------------------------------------------------
+ * Internal Wrapper Structures
  * ------------------------------------------------------------------------- */
 
 struct blaze_schema {
-    sourcemeta::blaze::Schema obj;
+    BlazeSchemaType obj;
 };
 
 struct blaze_evaluator {
@@ -29,7 +48,7 @@ struct blaze_evaluator {
 };
 
 struct blaze_result {
-    sourcemeta::blaze::Result obj;
+    BlazeResultType obj;
     bool holds_validity{false};
 };
 
@@ -56,24 +75,20 @@ struct blaze_annotation_iterator {
 };
 
 /* -------------------------------------------------------------------------
- * Internal Utility Helpers
+ * Stringifier Helpers (MSVC Conforming)
  * ------------------------------------------------------------------------- */
 
 namespace {
 
-// Serializes a sourcemeta::core::JSON AST node into a valid JSON string literal
-std::string stringify_json(const sourcemeta::core::JSON& value) {
-    std::ostringstream stream;
-    stream << value;
-    return stream.str();
-}
-
-// Formats JSON Pointer paths into standard RFC 6901 strings
 template <typename T>
-std::string location_to_string(const T& location) {
-    std::ostringstream stream;
-    stream << location;
-    return stream.str();
+std::string to_string_universal(const T& val) {
+    if constexpr (std::is_convertible_v<T, std::string_view>) {
+        return std::string(std::string_view(val));
+    } else {
+        std::ostringstream stream;
+        stream << val;
+        return stream.str();
+    }
 }
 
 } // namespace
@@ -96,11 +111,15 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
             ? sourcemeta::blaze::Mode::FullDiagnostics
             : sourcemeta::blaze::Mode::FastValidation;
 
-        // Parse JSON Schema AST
         const auto parsed_schema = sourcemeta::core::JSON::parse(schema_json);
 
-        // Compile to Blaze internal intermediate instructions
-        auto native_schema = sourcemeta::blaze::compile(parsed_schema, native_mode);
+        auto native_schema = sourcemeta::blaze::compile(
+            parsed_schema,
+            sourcemeta::core::schema_walker,
+            sourcemeta::core::schema_resolver,
+            sourcemeta::blaze::default_schema_compiler,
+            native_mode
+        );
 
         return new blaze_schema{ std::move(native_schema) };
     } catch (...) {
@@ -124,7 +143,7 @@ void blaze_evaluator_destroy(blaze_evaluator_t* evaluator) {
     delete evaluator;
 }
 
-/* --- Execution & Interactive Instance Evaluation --- */
+/* --- Execution & Instance Evaluation --- */
 
 blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
                                          const blaze_schema_t* schema,
@@ -135,10 +154,10 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
 
     try {
         const auto instance = sourcemeta::core::JSON::parse(instance_json);
-        auto native_result = evaluator->obj.validate(schema->obj, instance);
-        const bool is_valid = static_cast<bool>(native_result);
+        auto native_res = evaluator->obj.validate(schema->obj, instance);
+        const bool is_valid = static_cast<bool>(native_res);
 
-        return new blaze_result{ std::move(native_result), is_valid };
+        return new blaze_result{ std::move(native_res), is_valid };
     } catch (...) {
         return nullptr;
     }
@@ -165,12 +184,11 @@ blaze_error_iterator_t* blaze_result_get_errors(const blaze_result_t* result) {
     try {
         auto* iterator = new blaze_error_iterator{};
 
-        // Bootstrap snapshot: Eagerly extract and deep-copy diagnostics into flat heap memory
         for (const auto& error : result->obj.errors()) {
             blaze_error_item item;
-            item.instance_location = location_to_string(error.instance_location());
-            item.schema_location = location_to_string(error.schema_location());
-            item.message = std::string(error.message());
+            item.instance_location = to_string_universal(error.instance_location());
+            item.schema_location = to_string_universal(error.schema_location());
+            item.message = to_string_universal(error.message());
 
             iterator->errors.push_back(std::move(item));
         }
@@ -196,7 +214,7 @@ bool blaze_error_iterator_next(blaze_error_iterator_t* iterator) {
         return true;
     }
 
-    iterator->index = total; // Advance to end sentinel
+    iterator->index = total;
     return false;
 }
 
@@ -234,12 +252,11 @@ blaze_annotation_iterator_t* blaze_result_get_annotations(const blaze_result_t* 
     try {
         auto* iterator = new blaze_annotation_iterator{};
 
-        // Bootstrap snapshot: Eagerly extract metadata and stringify values to avoid invalidation
         for (const auto& annotation : result->obj.annotations()) {
             blaze_annotation_item item;
-            item.instance_location = location_to_string(annotation.instance_location());
-            item.keyword = std::string(annotation.keyword());
-            item.value_json = stringify_json(annotation.value());
+            item.instance_location = to_string_universal(annotation.instance_location());
+            item.keyword = to_string_universal(annotation.keyword());
+            item.value_json = to_string_universal(annotation.value());
 
             iterator->annotations.push_back(std::move(item));
         }
@@ -265,7 +282,7 @@ bool blaze_annotation_iterator_next(blaze_annotation_iterator_t* iterator) {
         return true;
     }
 
-    iterator->index = total; // Advance to end sentinel
+    iterator->index = total;
     return false;
 }
 
