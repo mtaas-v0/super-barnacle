@@ -23,7 +23,7 @@
  * Internal Debug Logger
  * ------------------------------------------------------------------------- */
 
-static bool g_debug_logging = true;
+static bool g_debug_logging = false;
 
 #define DBG_LOG(fmt, ...) \
     do { \
@@ -47,41 +47,15 @@ inline sourcemeta::core::JSON parse_json_input(const char* input) {
     return sourcemeta::core::parse_json(input);
 }
 
-// Safely checks key existence on sourcemeta::core::JSON
-bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key) {
+inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key) {
     if (!val.is_object()) return false;
-    try {
-        if constexpr (requires { val.has_key(key); }) {
-            return val.has_key(key);
-        } else if constexpr (requires { val.has_key(std::string(key)); }) {
-            return val.has_key(std::string(key));
-        } else if constexpr (requires { val.contains(key); }) {
-            return val.contains(key);
-        } else if constexpr (requires { val.contains(std::string(key)); }) {
-            return val.contains(std::string(key));
-        } else {
-            // Fallback: check via JSON stringification / search
-            return false;
-        }
-    } catch (...) {
-        return false;
-    }
+    return val.defines(std::string(key));
 }
 
-// Safely gets pointer to child node ONLY IF the key exists
-const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& val, std::string_view key) {
+inline const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& val, std::string_view key) {
     if (!val.is_object()) return nullptr;
-    if (!json_has_key(val, key)) return nullptr;
-
-    try {
-        if constexpr (requires { val.at(key); }) {
-            return &val.at(key);
-        } else {
-            return &val.at(std::string(key));
-        }
-    } catch (...) {
-        return nullptr;
-    }
+    if (!val.defines(std::string(key))) return nullptr;
+    return &val.at(std::string(key));
 }
 
 std::string to_json_string(const sourcemeta::core::JSON& val) {
