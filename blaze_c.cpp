@@ -8,6 +8,7 @@
 // Sourcemeta Core JSON AST
 #include <sourcemeta/core/json.h>
 
+#include <cstdio>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -19,7 +20,25 @@
 #include <vector>
 
 /* -------------------------------------------------------------------------
- * Internal Utility & Safe JSON Access Helpers
+ * Internal Debug Logger
+ * ------------------------------------------------------------------------- */
+
+static bool g_debug_logging = true;
+
+#define DBG_LOG(fmt, ...) \
+    do { \
+        if (g_debug_logging) { \
+            std::fprintf(stderr, "[BLAZE_C_DEBUG] %s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+            std::fflush(stderr); \
+        } \
+    } while(0)
+
+extern "C" void blaze_set_debug_logging(bool enabled) {
+    g_debug_logging = enabled;
+}
+
+/* -------------------------------------------------------------------------
+ * Internal Helpers
  * ------------------------------------------------------------------------- */
 
 namespace {
@@ -100,7 +119,7 @@ using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
 ));
 
 /* -------------------------------------------------------------------------
- * Internal Wrapper Structures (Pinned Lifetime Layout)
+ * Internal Wrapper Structures
  * ------------------------------------------------------------------------- */
 
 struct blaze_schema {
@@ -204,7 +223,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
         }
     }
 
-    // 2. Check required properties and inspect child properties
+    // 2. Check required properties
     const auto* req_node = json_try_get(schema, "required");
     const auto* props = json_try_get(schema, "properties");
 
@@ -231,7 +250,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
         }
     }
 
-    // 3. Check numeric constraints (minimum, maximum)
+    // 3. Check numeric constraints
     if (instance.is_integer() || instance.is_real()) {
         double val = clean_number(instance);
         if (const auto* min_node = json_try_get(schema, "minimum")) {
@@ -256,7 +275,7 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
         }
     }
 
-    // 4. Check string constraints (minLength)
+    // 4. Check string constraints
     if (instance.is_string()) {
         std::size_t len = clean_string(instance).size();
         if (const auto* min_l_node = json_try_get(schema, "minLength")) {
@@ -282,24 +301,27 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
 
 extern "C" {
 
-/* --- Lifecycle & Schema Compilation --- */
-
 blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode) {
-    if (!schema_json) return nullptr;
+    DBG_LOG("Entering (mode=%d, schema_ptr=%p)", mode, (void*)schema_json);
+    if (!schema_json) {
+        DBG_LOG("Error: schema_json is NULL");
+        return nullptr;
+    }
     (void)mode;
 
     try {
+        DBG_LOG("Step 1: Allocating blaze_schema container...");
         auto schema = std::make_unique<blaze_schema>();
 
-        // 1. Own raw string buffer permanently
+        DBG_LOG("Step 2: Copying raw schema string...");
         schema->schema_str = schema_json;
 
-        // 2. Allocate and parse AST into fixed heap storage
+        DBG_LOG("Step 3: Parsing JSON schema AST with sourcemeta::core::parse_json...");
         schema->raw_schema = std::make_unique<sourcemeta::core::JSON>(
             parse_json_input(schema->schema_str.c_str())
         );
 
-        // 3. Compile against heap AST
+        DBG_LOG("Step 4: Compiling schema with sourcemeta::blaze::compile...");
         auto compiled = sourcemeta::blaze::compile(
             *(schema->raw_schema),
             sourcemeta::blaze::schema_walker,
@@ -308,54 +330,77 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
             sourcemeta::blaze::Mode::FastValidation
         );
 
+        DBG_LOG("Step 5: Storing compiled bytecode template...");
         schema->obj = std::make_unique<BlazeSchemaType>(std::move(compiled));
 
-        return schema.release();
+        blaze_schema_t* result = schema.release();
+        DBG_LOG("Success! Returning blaze_schema_t* = %p", (void*)result);
+        return result;
+    } catch (const std::exception& e) {
+        DBG_LOG("C++ Exception caught during compilation: %s", e.what());
+        return nullptr;
     } catch (...) {
+        DBG_LOG("Unknown C++ exception caught during compilation");
         return nullptr;
     }
 }
 
 void blaze_schema_destroy(blaze_schema_t* schema) {
+    DBG_LOG("Entering (schema=%p)", (void*)schema);
     delete schema;
+    DBG_LOG("Destroyed schema successfully");
 }
 
 blaze_evaluator_t* blaze_evaluator_create(void) {
+    DBG_LOG("Entering evaluator creation...");
     try {
-        return new blaze_evaluator{};
+        auto* ev = new blaze_evaluator{};
+        DBG_LOG("Created blaze_evaluator_t* = %p", (void*)ev);
+        return ev;
     } catch (...) {
+        DBG_LOG("Failed to create evaluator");
         return nullptr;
     }
 }
 
 void blaze_evaluator_destroy(blaze_evaluator_t* evaluator) {
+    DBG_LOG("Entering (evaluator=%p)", (void*)evaluator);
     delete evaluator;
+    DBG_LOG("Destroyed evaluator successfully");
 }
-
-/* --- Execution & Instance Evaluation --- */
 
 blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
                                          const blaze_schema_t* schema,
                                          const char* instance_json) {
-    if (!evaluator || !schema || !schema->obj || !schema->raw_schema || !instance_json) {
-        return nullptr;
-    }
+    DBG_LOG("Entering (evaluator=%p, schema=%p, instance=%p)",
+            (void*)evaluator, (void*)schema, (void*)instance_json);
+
+    if (!evaluator) { DBG_LOG("Error: evaluator is NULL"); return nullptr; }
+    if (!schema) { DBG_LOG("Error: schema is NULL"); return nullptr; }
+    if (!schema->obj) { DBG_LOG("Error: schema->obj is NULL"); return nullptr; }
+    if (!schema->raw_schema) { DBG_LOG("Error: schema->raw_schema is NULL"); return nullptr; }
+    if (!instance_json) { DBG_LOG("Error: instance_json is NULL"); return nullptr; }
 
     try {
+        DBG_LOG("Step 1: Parsing instance JSON AST...");
         const auto instance = parse_json_input(instance_json);
+
+        DBG_LOG("Step 2: Running evaluator->obj.validate()...");
         const bool is_valid = evaluator->obj.validate(*(schema->obj), instance);
+        DBG_LOG("Step 3: Validation returned bool = %s", is_valid ? "true" : "false");
 
         auto* res = new blaze_result{};
         res->holds_validity = is_valid;
 
-        // Collect annotations for form tooltips
+        DBG_LOG("Step 4: Collecting annotations...");
         collect_annotations(*(schema->raw_schema), "", res->annotations);
 
-        // If validation failed, extract exact error paths
         if (!is_valid) {
+            DBG_LOG("Step 5: Instance invalid. Extracting diagnostic paths...");
             diagnose_instance(*(schema->raw_schema), instance, "", "", res->errors);
 
             if (res->errors.empty()) {
+                DBG_LOG("Step 5b: No sub-errors found. Emitting fallback root error.");
                 res->errors.push_back(blaze_error_item{
                     "/",
                     "/",
@@ -364,34 +409,42 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
             }
         }
 
+        DBG_LOG("Success! Returning blaze_result_t* = %p", (void*)res);
         return res;
     } catch (const std::exception& e) {
+        DBG_LOG("C++ Exception in evaluate: %s", e.what());
         auto* res = new blaze_result{};
         res->holds_validity = false;
         res->errors.push_back(blaze_error_item{ "/", "/", e.what() });
         return res;
     } catch (...) {
+        DBG_LOG("Unknown exception in evaluate");
         return nullptr;
     }
 }
 
 void blaze_result_destroy(blaze_result_t* result) {
+    DBG_LOG("Entering (result=%p)", (void*)result);
     delete result;
+    DBG_LOG("Destroyed result successfully");
 }
 
 bool blaze_result_is_valid(const blaze_result_t* result) {
-    if (!result) return false;
+    if (!result) {
+        DBG_LOG("blaze_result_is_valid: result is NULL -> false");
+        return false;
+    }
     return result->holds_validity;
 }
 
-/* --- Diagnostic Errors Interface --- */
-
 blaze_error_iterator_t* blaze_result_get_errors(const blaze_result_t* result) {
+    DBG_LOG("Entering (result=%p)", (void*)result);
     if (!result) return nullptr;
 
     try {
         auto* iterator = new blaze_error_iterator{};
         iterator->errors = result->errors;
+        DBG_LOG("Created error iterator with %zu error(s)", iterator->errors.size());
         return iterator;
     } catch (...) {
         return nullptr;
@@ -399,6 +452,7 @@ blaze_error_iterator_t* blaze_result_get_errors(const blaze_result_t* result) {
 }
 
 void blaze_error_iterator_destroy(blaze_error_iterator_t* iterator) {
+    DBG_LOG("Entering (iterator=%p)", (void*)iterator);
     delete iterator;
 }
 
@@ -439,14 +493,14 @@ const char* blaze_error_get_message(const blaze_error_iterator_t* iterator) {
     return iterator->errors[static_cast<size_t>(iterator->index)].message.c_str();
 }
 
-/* --- Annotations Interface --- */
-
 blaze_annotation_iterator_t* blaze_result_get_annotations(const blaze_result_t* result) {
+    DBG_LOG("Entering (result=%p)", (void*)result);
     if (!result) return nullptr;
 
     try {
         auto* iterator = new blaze_annotation_iterator{};
         iterator->annotations = result->annotations;
+        DBG_LOG("Created annotation iterator with %zu item(s)", iterator->annotations.size());
         return iterator;
     } catch (...) {
         return nullptr;
@@ -454,6 +508,7 @@ blaze_annotation_iterator_t* blaze_result_get_annotations(const blaze_result_t* 
 }
 
 void blaze_annotation_iterator_destroy(blaze_annotation_iterator_t* iterator) {
+    DBG_LOG("Entering (iterator=%p)", (void*)iterator);
     delete iterator;
 }
 
