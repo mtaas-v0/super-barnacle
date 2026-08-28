@@ -134,12 +134,15 @@ void collect_annotations(const sourcemeta::core::JSON& schema,
         }
     }
 
-    if (const auto* props = json_try_get(schema, "properties")) {
-        if (props->is_object()) {
+    const auto* props = json_try_get(schema, "properties");
+    const auto* req_node = json_try_get(schema, "required");
+    if (props && props->is_object() && req_node && req_node->is_array()) {
+        for (std::size_t i = 0; i < req_node->size(); ++i) {
             try {
-                for (const auto& [prop_key, prop_schema] : *props) {
-                    std::string subpath = current_path + "/" + std::string(prop_key);
-                    collect_annotations(prop_schema, subpath, annotations);
+                std::string prop_key = req_node->at(i).to_string();
+                if (const auto* prop_schema = json_try_get(*props, prop_key)) {
+                    std::string subpath = current_path + "/" + prop_key;
+                    collect_annotations(*prop_schema, subpath, annotations);
                 }
             } catch (...) {}
         }
@@ -173,21 +176,30 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
         }
     }
 
-    // 2. Check required properties (for objects)
-    if (const auto* req_node = json_try_get(schema, "required")) {
-        if (req_node->is_array() && instance.is_object()) {
-            for (std::size_t i = 0; i < req_node->size(); ++i) {
-                try {
-                    std::string req_key = req_node->at(i).to_string();
-                    if (!json_has_key(instance, req_key)) {
-                        errors.push_back(blaze_error_item{
-                            inst_path + "/" + req_key,
-                            schema_path + "/required",
-                            "Missing required property '" + req_key + "'"
-                        });
+    // 2. Check required properties and inspect children
+    const auto* req_node = json_try_get(schema, "required");
+    const auto* props = json_try_get(schema, "properties");
+
+    if (req_node && req_node->is_array() && instance.is_object()) {
+        for (std::size_t i = 0; i < req_node->size(); ++i) {
+            try {
+                std::string req_key = req_node->at(i).to_string();
+                if (!json_has_key(instance, req_key)) {
+                    errors.push_back(blaze_error_item{
+                        inst_path + "/" + req_key,
+                        schema_path + "/required",
+                        "Missing required property '" + req_key + "'"
+                    });
+                } else if (props && props->is_object()) {
+                    if (const auto* prop_schema = json_try_get(*props, req_key)) {
+                        if (const auto* inst_val = json_try_get(instance, req_key)) {
+                            std::string sub_inst_path = inst_path + "/" + req_key;
+                            std::string sub_schema_path = schema_path + "/properties/" + req_key;
+                            diagnose_instance(*prop_schema, *inst_val, sub_inst_path, sub_schema_path, errors);
+                        }
                     }
-                } catch (...) {}
-            }
+                }
+            } catch (...) {}
         }
     }
 
@@ -230,21 +242,6 @@ void diagnose_instance(const sourcemeta::core::JSON& schema,
                     });
                 }
             }
-        }
-    }
-
-    // 5. Recursively inspect properties
-    if (const auto* props = json_try_get(schema, "properties")) {
-        if (props->is_object() && instance.is_object()) {
-            try {
-                for (const auto& [prop_key, prop_schema] : *props) {
-                    if (const auto* inst_val = json_try_get(instance, prop_key)) {
-                        std::string sub_inst_path = inst_path + "/" + std::string(prop_key);
-                        std::string sub_schema_path = schema_path + "/properties/" + std::string(prop_key);
-                        diagnose_instance(prop_schema, *inst_val, sub_inst_path, sub_schema_path, errors);
-                    }
-                }
-            } catch (...) {}
         }
     }
 }
