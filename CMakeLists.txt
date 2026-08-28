@@ -21,9 +21,10 @@ if(WIN32)
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
         NTDDI_VERSION=0x0A000007
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
     )
+
+    # NOMINMAX
+    # WIN32_LEAN_AND_MEAN
 endif()
 
 # ----------------------------------------------------------------------
