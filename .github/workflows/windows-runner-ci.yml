@@ -48,7 +48,7 @@ jobs:
       - name: Upload Windows x64 MSVC Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: blaze-c-windows-msvc-x64
+          name: blaze-c-windows-msvc-x64-r${{github.run_number}}
           path: package-x64/
           retention-days: 14
 
@@ -88,7 +88,7 @@ jobs:
       - name: Upload Windows ARM64 MSVC Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: blaze-c-windows-msvc-arm64
+          name: blaze-c-windows-msvc-arm64-r${{github.run_number}}
           path: package-arm64/
           retention-days: 14
 
