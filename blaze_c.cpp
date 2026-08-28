@@ -28,22 +28,6 @@ inline sourcemeta::core::JSON parse_json_input(const char* input) {
     return sourcemeta::core::parse_json(input);
 }
 
-inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key) {
-    if (!val.is_object()) return false;
-    try {
-        if constexpr (requires { val.contains(key); }) {
-            return val.contains(key);
-        } else if constexpr (requires { val.find(key); }) {
-            return val.find(key) != val.end();
-        } else {
-            (void)val.at(key);
-            return true;
-        }
-    } catch (...) {
-        return false;
-    }
-}
-
 inline const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& val, std::string_view key) {
     if (!val.is_object()) return nullptr;
     try {
@@ -51,6 +35,10 @@ inline const sourcemeta::core::JSON* json_try_get(const sourcemeta::core::JSON& 
     } catch (...) {
         return nullptr;
     }
+}
+
+inline bool json_has_key(const sourcemeta::core::JSON& val, std::string_view key) {
+    return json_try_get(val, key) != nullptr;
 }
 
 std::string json_type_name(const sourcemeta::core::JSON& val) {
