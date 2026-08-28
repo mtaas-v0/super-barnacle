@@ -13,7 +13,7 @@ jobs:
   # -----------------------------------------------------------------
   build-and-test-msvc-x64:
     name: Windows x64 (MSVC)
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout Repository
