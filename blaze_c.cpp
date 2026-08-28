@@ -1,6 +1,6 @@
 #include "blaze_c.h"
 
-// Blaze modules (defines compiler, evaluator, schema_walker, schema_resolver, default_schema_compiler)
+// Blaze modules
 #include <sourcemeta/blaze/compiler.h>
 #include <sourcemeta/blaze/evaluator.h>
 #include <sourcemeta/blaze/foundation.h>
@@ -9,6 +9,7 @@
 #include <sourcemeta/core/json.h>
 
 #include <cstddef>
+#include <exception>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -18,7 +19,7 @@
 #include <vector>
 
 /* -------------------------------------------------------------------------
- * Robust JSON Parsing Helper
+ * Internal Utility & Type Deduction
  * ------------------------------------------------------------------------- */
 
 namespace {
@@ -27,22 +28,7 @@ inline sourcemeta::core::JSON parse_json_input(const char* input) {
     return sourcemeta::core::parse_json(input);
 }
 
-template <typename T>
-std::string to_string_universal(const T& val) {
-    if constexpr (std::is_convertible_v<T, std::string_view>) {
-        return std::string(std::string_view(val));
-    } else {
-        std::ostringstream stream;
-        stream << val;
-        return stream.str();
-    }
-}
-
 } // namespace
-
-/* -------------------------------------------------------------------------
- * Type Deduction for In-Tree Blaze Return Types
- * ------------------------------------------------------------------------- */
 
 using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
     std::declval<sourcemeta::core::JSON>(),
@@ -50,11 +36,6 @@ using BlazeSchemaType = decltype(sourcemeta::blaze::compile(
     sourcemeta::blaze::schema_resolver,
     sourcemeta::blaze::default_schema_compiler,
     sourcemeta::blaze::Mode::FastValidation
-));
-
-using BlazeResultType = decltype(std::declval<sourcemeta::blaze::Evaluator>().validate(
-    std::declval<BlazeSchemaType>(),
-    std::declval<sourcemeta::core::JSON>()
 ));
 
 /* -------------------------------------------------------------------------
@@ -69,26 +50,27 @@ struct blaze_evaluator {
     sourcemeta::blaze::Evaluator obj;
 };
 
-struct blaze_result {
-    BlazeResultType obj;
-    bool holds_validity{false};
-};
-
 struct blaze_error_item {
     std::string instance_location;
     std::string schema_location;
     std::string message;
 };
 
-struct blaze_error_iterator {
-    std::vector<blaze_error_item> errors;
-    ptrdiff_t index{-1};
-};
-
 struct blaze_annotation_item {
     std::string instance_location;
     std::string keyword;
     std::string value_json;
+};
+
+struct blaze_result {
+    bool holds_validity{false};
+    std::vector<blaze_error_item> errors;
+    std::vector<blaze_annotation_item> annotations;
+};
+
+struct blaze_error_iterator {
+    std::vector<blaze_error_item> errors;
+    ptrdiff_t index{-1};
 };
 
 struct blaze_annotation_iterator {
@@ -109,11 +91,9 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
         return nullptr;
     }
 
-    try {
-        const auto native_mode = (mode == BLAZE_MODE_FULL_DIAGNOSTICS)
-            ? sourcemeta::blaze::Mode::FullDiagnostics
-            : sourcemeta::blaze::Mode::FastValidation;
+    (void)mode; // Blaze compiler runs in Mode::FastValidation
 
+    try {
         const auto parsed_schema = parse_json_input(schema_json);
 
         auto native_schema = sourcemeta::blaze::compile(
@@ -121,7 +101,7 @@ blaze_schema_t* blaze_schema_compile(const char* schema_json, blaze_mode_t mode)
             sourcemeta::blaze::schema_walker,
             sourcemeta::blaze::schema_resolver,
             sourcemeta::blaze::default_schema_compiler,
-            native_mode
+            sourcemeta::blaze::Mode::FastValidation
         );
 
         return new blaze_schema{ std::move(native_schema) };
@@ -157,10 +137,29 @@ blaze_result_t* blaze_evaluator_evaluate(blaze_evaluator_t* evaluator,
 
     try {
         const auto instance = parse_json_input(instance_json);
-        auto native_res = evaluator->obj.validate(schema->obj, instance);
-        const bool is_valid = static_cast<bool>(native_res);
+        const bool is_valid = evaluator->obj.validate(schema->obj, instance);
 
-        return new blaze_result{ std::move(native_res), is_valid };
+        auto* res = new blaze_result{};
+        res->holds_validity = is_valid;
+
+        if (!is_valid) {
+            blaze_error_item err;
+            err.instance_location = ""; // Root path
+            err.schema_location = "";
+            err.message = "Instance validation failed against compiled schema";
+            res->errors.push_back(std::move(err));
+        }
+
+        return res;
+    } catch (const std::exception& e) {
+        auto* res = new blaze_result{};
+        res->holds_validity = false;
+        blaze_error_item err;
+        err.instance_location = "";
+        err.schema_location = "";
+        err.message = e.what();
+        res->errors.push_back(std::move(err));
+        return res;
     } catch (...) {
         return nullptr;
     }
@@ -186,16 +185,7 @@ blaze_error_iterator_t* blaze_result_get_errors(const blaze_result_t* result) {
 
     try {
         auto* iterator = new blaze_error_iterator{};
-
-        for (const auto& error : result->obj.errors()) {
-            blaze_error_item item;
-            item.instance_location = to_string_universal(error.instance_location());
-            item.schema_location = to_string_universal(error.schema_location());
-            item.message = to_string_universal(error.message());
-
-            iterator->errors.push_back(std::move(item));
-        }
-
+        iterator->errors = result->errors;
         return iterator;
     } catch (...) {
         return nullptr;
@@ -254,16 +244,7 @@ blaze_annotation_iterator_t* blaze_result_get_annotations(const blaze_result_t* 
 
     try {
         auto* iterator = new blaze_annotation_iterator{};
-
-        for (const auto& annotation : result->obj.annotations()) {
-            blaze_annotation_item item;
-            item.instance_location = to_string_universal(annotation.instance_location());
-            item.keyword = to_string_universal(annotation.keyword());
-            item.value_json = to_string_universal(annotation.value());
-
-            iterator->annotations.push_back(std::move(item));
-        }
-
+        iterator->annotations = result->annotations;
         return iterator;
     } catch (...) {
         return nullptr;

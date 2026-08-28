@@ -97,6 +97,17 @@ if [ ! -f "${CXX_ARM64}" ]; then
     exit 1
 fi
 
+# Step 2.5: Build Native Linux Codegen Tools
+echo "==> Building native Linux host tools (Unicode & IDNA codegen)..."
+cmake -B build-host -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=OFF
+
+cmake --build build-host --target sourcemeta_core_unicode_codegen sourcemeta_core_idna_codegen -j "${NUM_JOBS}"
+
+HOST_BIN_DIRS=$(find "$(pwd)/build-host" -type f -perm /111 -exec dirname {} + | sort -u | paste -sd ":" -)
+export PATH="${HOST_BIN_DIRS}:${PATH}"
+
 # Step 3: Clean up previous builds if requested
 if [ "$CLEAN" = true ]; then
     echo "==> Cleaning build-win-arm64 and dist/windows-arm64..."

@@ -168,7 +168,7 @@ target_link_libraries(blaze_c PRIVATE
     sourcemeta_blaze_compiler
     sourcemeta_blaze_evaluator
     sourcemeta_blaze_foundation
-    sourcemeta_core
+    # sourcemeta_core
 )
 
 if(WIN32)

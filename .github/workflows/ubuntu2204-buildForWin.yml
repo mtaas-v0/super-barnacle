@@ -28,11 +28,12 @@ jobs:
       - name: Build Host Codegen Tool
         run: |
           cmake -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build build-host --target sourcemeta_core_unicode_codegen
+          cmake --build build-host --target sourcemeta_core_unicode_codegen sourcemeta_core_idna_codegen
           
-          # Add host tool directory to GITHUB_PATH
-          HOST_TOOL_PATH=$(find "$(pwd)/build-host" -name "sourcemeta_core_unicode_codegen" -type f -perm /111 | head -n 1)
-          echo "$(dirname "$HOST_TOOL_PATH")" >> $GITHUB_PATH
+          # Register all host tool directories with GITHUB_PATH
+          find "$(pwd)/build-host" -type f -perm /111 -exec dirname {} + | sort -u | while read -r dir; do
+            echo "$dir" >> $GITHUB_PATH
+          done
 
       - name: Configure CMake (Cross-Compile Windows x86_64)
         run: |

@@ -79,21 +79,22 @@ fi
 
 # Step 1: Bootstrap native host codegen tool
 bootstrap_host_tools() {
-    echo "==> [Host Tools] Building native sourcemeta_core_unicode_codegen on Linux..."
+    echo "==> [Host Tools] Building native codegen tools on Linux..."
     cmake -B build-host -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_TESTING=OFF
 
-    cmake --build build-host --target sourcemeta_core_unicode_codegen -j "${NUM_JOBS}"
+    # Build both Unicode and IDNA codegen host targets
+    cmake --build build-host --target sourcemeta_core_unicode_codegen sourcemeta_core_idna_codegen -j "${NUM_JOBS}"
 
-    # Locate the compiled host binary and prepend to PATH
-    HOST_TOOL_PATH=$(find "$(pwd)/build-host" -name "sourcemeta_core_unicode_codegen" -type f -perm /111 | head -n 1)
-    if [ -n "${HOST_TOOL_PATH}" ]; then
-        HOST_TOOL_DIR=$(dirname "${HOST_TOOL_PATH}")
-        export PATH="${HOST_TOOL_DIR}:${PATH}"
-        echo "==> [Host Tools] Registered on PATH: ${HOST_TOOL_DIR}"
+    # Collect and add all directories containing built host binaries to PATH
+    HOST_BIN_DIRS=$(find "$(pwd)/build-host" -type f -perm /111 -exec dirname {} + | sort -u | paste -sd ":" -)
+    if [ -n "${HOST_BIN_DIRS}" ]; then
+        export PATH="${HOST_BIN_DIRS}:${PATH}"
+        echo "==> [Host Tools] Exported to PATH:"
+        echo "${HOST_BIN_DIRS}" | tr ':' '\n'
     else
-        echo "Error: Failed to build host sourcemeta_core_unicode_codegen"
+        echo "Error: Failed to locate compiled host codegen tools in build-host"
         exit 1
     fi
 }
